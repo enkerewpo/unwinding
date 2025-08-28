@@ -227,6 +227,7 @@ macro_rules! helper {
 }
 
 #[unsafe(naked)]
+#[unsafe(no_mangle)]
 pub extern "C-unwind" fn save_context(f: extern "C" fn(&mut Context, *mut ()), ptr: *mut ()) {
     #[allow(unused_unsafe)]
     unsafe {
@@ -237,6 +238,7 @@ pub extern "C-unwind" fn save_context(f: extern "C" fn(&mut Context, *mut ()), p
     }
 }
 
+#[unsafe(no_mangle)]
 pub unsafe fn restore_context(ctx: &Context) -> ! {
     unsafe {
         #[cfg(target_feature = "d")]

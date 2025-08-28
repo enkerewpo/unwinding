@@ -20,26 +20,53 @@ pub use find_fde::custom_eh_frame_finder;
 fn with_context<T, F: FnOnce(&mut Context) -> T>(f: F) -> T {
     use core::mem::ManuallyDrop;
 
+    crate::unwinding_debugln!("[CONTEXT] with_context: starting");
+    
     union Data<T, F> {
         f: ManuallyDrop<F>,
         t: ManuallyDrop<T>,
     }
 
     extern "C" fn delegate<T, F: FnOnce(&mut Context) -> T>(ctx: &mut Context, ptr: *mut ()) {
+        crate::unwinding_debugln!("[CONTEXT] delegate: called with context");
+        crate::unwinding_debugln!("[CONTEXT] delegate: Context pointer: {:p}", ctx);
+        crate::unwinding_debugln!("[CONTEXT] delegate: Data pointer: {:p}", ptr);
+        
         // SAFETY: This function is called exactly once; it extracts the function, call it and
         // store the return value. This function is `extern "C"` so we don't need to worry about
         // unwinding past it.
         unsafe {
             let data = &mut *ptr.cast::<Data<T, F>>();
+            crate::unwinding_debugln!("[CONTEXT] delegate: About to call closure");
             let t = ManuallyDrop::take(&mut data.f)(ctx);
+            crate::unwinding_debugln!("[CONTEXT] delegate: Closure completed, storing result");
             data.t = ManuallyDrop::new(t);
         }
+        crate::unwinding_debugln!("[CONTEXT] delegate: function completed");
     }
 
     let mut data = Data {
         f: ManuallyDrop::new(f),
     };
-    save_context(delegate::<T, F>, ptr::addr_of_mut!(data).cast());
+    
+    crate::unwinding_debugln!("[CONTEXT] with_context: calling save_context");
+    
+    // Debug: print some register values before calling save_context
+    // Note: We can't safely access registers in this context, so just print a message
+    crate::unwinding_debugln!("[CONTEXT] About to call save_context");
+    
+    // Ensure the pointer is properly aligned and valid
+    let data_ptr = ptr::addr_of_mut!(data).cast();
+    crate::unwinding_debugln!("[CONTEXT] Data pointer: {:p}", data_ptr);
+    
+    // Add more debug info before calling save_context
+    crate::unwinding_debugln!("[CONTEXT] About to enter assembly code...");
+    
+    save_context(delegate::<T, F>, data_ptr);
+    
+    // This line should never be reached if save_context doesn't return
+    crate::unwinding_debugln!("[CONTEXT] with_context: save_context returned - THIS SHOULD NOT HAPPEN");
+    
     unsafe { ManuallyDrop::into_inner(data.t) }
 }
 
@@ -152,13 +179,26 @@ macro_rules! try2 {
 pub unsafe extern "C-unwind" fn _Unwind_RaiseException(
     exception: *mut UnwindException,
 ) -> UnwindReasonCode {
+    crate::unwinding_debugln!("[UNWIND] _Unwind_RaiseException called");
+    
     with_context(|saved_ctx| {
         // Phase 1: Search for handler
         let mut ctx = saved_ctx.clone();
         let mut signal = false;
+        
+        crate::unwinding_debugln!("[UNWIND] Phase 1: Searching for handler");
+        
+        let mut frame_count = 0;
         loop {
+            frame_count += 1;
+            crate::unwinding_debugln!("[UNWIND] Loop iteration {}, trying to get frame", frame_count);
+            
             if let Some(frame) = try1!(Frame::from_context(&ctx, signal)) {
+                crate::unwinding_debugln!("[UNWIND] Processing frame {}, signal: {}", frame_count, signal);
+                
                 if let Some(personality) = frame.personality() {
+                    crate::unwinding_debugln!("[UNWIND] Calling personality function");
+                    
                     let result = unsafe {
                         personality(
                             1,
@@ -173,19 +213,30 @@ pub unsafe extern "C-unwind" fn _Unwind_RaiseException(
                         )
                     };
 
+                    crate::unwinding_debugln!("[UNWIND] Personality result: {:?}", result);
+                    
                     match result {
-                        UnwindReasonCode::CONTINUE_UNWIND => (),
+                        UnwindReasonCode::CONTINUE_UNWIND => {
+                            crate::unwinding_debugln!("[UNWIND] Continuing unwind");
+                        },
                         UnwindReasonCode::HANDLER_FOUND => {
+                            crate::unwinding_debugln!("[UNWIND] Handler found, breaking");
                             break;
                         }
-                        _ => return UnwindReasonCode::FATAL_PHASE1_ERROR,
+                        _ => {
+                            crate::unwinding_debugln!("[UNWIND] Fatal phase 1 error");
+                            return UnwindReasonCode::FATAL_PHASE1_ERROR;
+                        }
                     }
                 }
 
+                crate::unwinding_debugln!("[UNWIND] Unwinding frame");
+                
                 ctx = try1!(frame.unwind(&ctx));
                 signal = frame.is_signal_trampoline();
             } else {
-                return UnwindReasonCode::END_OF_STACK;
+                crate::unwinding_debugln!("[UNWIND] No frame found, fatal error");
+                return UnwindReasonCode::FATAL_PHASE1_ERROR;
             }
         }
 
@@ -209,10 +260,15 @@ fn raise_exception_phase2(
     ctx: &mut Context,
     handler_cfa: usize,
 ) -> UnwindReasonCode {
+    crate::unwinding_debugln!("[UNWIND] Phase 2: Cleanup phase, handler_cfa: 0x{:x}", handler_cfa);
+    
     let mut signal = false;
     loop {
         if let Some(frame) = try2!(Frame::from_context(ctx, signal)) {
             let frame_cfa = ctx[Arch::SP] - signal as usize;
+            
+            crate::unwinding_debugln!("[UNWIND] Phase 2: Processing frame, frame_cfa: 0x{:x}", frame_cfa);
+            
             if let Some(personality) = frame.personality() {
                 let code = unsafe {
                     personality(

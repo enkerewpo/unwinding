@@ -47,8 +47,11 @@ impl Frame {
     pub fn from_context(ctx: &Context, signal: bool) -> Result<Option<Self>, gimli::Error> {
         let mut ra = ctx[Arch::RA];
 
+        crate::unwinding_debugln!("[FRAME] from_context: RA=0x{:x}, signal={}", ra, signal);
+
         // Reached end of stack
         if ra == 0 {
+            crate::unwinding_debugln!("[FRAME] RA is 0, end of stack");
             return Ok(None);
         }
 
@@ -58,8 +61,14 @@ impl Frame {
         }
 
         let fde_result = match find_fde::get_finder().find_fde(ra as _) {
-            Some(v) => v,
-            None => return Ok(None),
+            Some(v) => {
+                crate::unwinding_debugln!("[FRAME] Found FDE for address 0x{:x}", ra);
+                v
+            },
+            None => {
+                crate::unwinding_debugln!("[FRAME] No FDE found for address 0x{:x}", ra);
+                return Ok(None);
+            },
         };
         let mut unwinder = UnwindContext::<_, StoreOnStack>::new_in();
         let row = fde_result
@@ -72,6 +81,7 @@ impl Frame {
             )?
             .clone();
 
+        crate::unwinding_debugln!("[FRAME] Successfully created frame");
         Ok(Some(Self { fde_result, row }))
     }
 
@@ -132,16 +142,25 @@ impl Frame {
     }
 
     pub fn unwind(&self, ctx: &Context) -> Result<Context, gimli::Error> {
+        crate::unwinding_debugln!("[FRAME] unwind: starting frame unwind");
+        
         let row = &self.row;
         let mut new_ctx = ctx.clone();
 
         let cfa = match *row.cfa() {
             CfaRule::RegisterAndOffset { register, offset } => {
-                ctx[register].wrapping_add(offset as usize)
+                let result = ctx[register].wrapping_add(offset as usize);
+                crate::unwinding_debugln!("[FRAME] CFA: register {:?} + offset {} = 0x{:x}", register, offset, result);
+                result
             }
-            CfaRule::Expression(expr) => self.evaluate_expression(ctx, expr)?,
+            CfaRule::Expression(expr) => {
+                let result = self.evaluate_expression(ctx, expr)?;
+                crate::unwinding_debugln!("[FRAME] CFA: expression result = 0x{:x}", result);
+                result
+            },
         };
 
+        crate::unwinding_debugln!("[FRAME] Setting SP to CFA: 0x{:x}", cfa);
         new_ctx[Arch::SP] = cfa as _;
         new_ctx[Arch::RA] = 0;
 

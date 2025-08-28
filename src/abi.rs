@@ -9,7 +9,7 @@ use crate::arch::Arch;
 pub use crate::unwinder::*;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct UnwindReasonCode(pub c_int);
 
 #[allow(unused)]

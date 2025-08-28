@@ -27,6 +27,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "433bfe06b8c75da9b2e3fbea6e5329ff87748f0b144ef75306e674c3f6f7c13f"
 
 [[package]]
+name = "ns16550a"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3cd8abe9e54bce27659507b94f355c9334378ab15da332b6986b3583ebf7228"
+
+[[package]]
 name = "panic_abort_no_debuginfo"
 version = "0.1.0"
 dependencies = [
@@ -73,6 +79,7 @@ version = "0.2.7"
 dependencies = [
  "gimli",
  "libc",
+ "ns16550a",
  "rustc-std-workspace-core",
  "spin",
 ]

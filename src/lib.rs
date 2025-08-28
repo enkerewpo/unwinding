@@ -38,6 +38,9 @@ mod util;
 #[cfg(feature = "print")]
 pub mod print;
 
+#[cfg(feature = "baremetal-debug")]
+pub mod baremetal_debug;
+
 #[cfg(feature = "personality")]
 mod personality;
 #[cfg(all(not(feature = "personality"), feature = "personality-dummy"))]

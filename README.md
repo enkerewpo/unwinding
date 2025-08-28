@@ -75,3 +75,19 @@ And that's it! After you ensured that the global allocator is functional, you ca
 If your linker supports `--eh-frame-hdr` you can also try to use `fde-gnu-eh-frame-hdr` instead of `fde-static`. GNU LD will provides a `__GNU_EH_FRAME_HDR` magic symbol so you don't have to provide `__eh_frame` through linker script.
 
 If you have your own version of `thread_local` and `println!` working, you can port [`panic_handler.rs`](src/panic_handler.rs) for double-panic protection and stack traces!
+
+## Baremetal Debug Output
+
+For baremetal environments where you need debug output (e.g., LoongArch64 baremetal OS development), you can enable the `baremetal-debug` feature. This provides UART-based debug output for unwinding library internals without depending on libc or the standard library.
+
+```toml
+[dependencies]
+unwinding = { version = "0.2.7", features = ["baremetal-debug"] }
+```
+
+This feature provides:
+- `unwinding_debug!` and `unwinding_debugln!` macros for internal unwinding debug output
+- Automatic UART initialization for LoongArch64 hardware
+- Detailed logging of unwinding process steps
+
+When enabled, the unwinding library will output detailed debug information about the unwinding process through UART, helping you debug stack unwinding issues in baremetal environments.
