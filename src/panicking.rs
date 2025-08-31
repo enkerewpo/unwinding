@@ -10,25 +10,18 @@ pub unsafe trait Exception {
 }
 
 pub fn begin_panic<E: Exception>(exception: E) -> UnwindReasonCode {
-    crate::unwinding_debugln!("[PANICKING] begin_panic called");
-    
     unsafe extern "C" fn exception_cleanup<E: Exception>(
         _unwind_code: UnwindReasonCode,
         exception: *mut UnwindException,
     ) {
-        crate::unwinding_debugln!("[PANICKING] exception_cleanup called with code: {:?}", _unwind_code);
         unsafe { E::unwrap(exception) };
     }
 
     let ex = E::wrap(exception);
-    crate::unwinding_debugln!("[PANICKING] Exception wrapped, calling _Unwind_RaiseException");
-    
     unsafe {
         (*ex).exception_class = u64::from_ne_bytes(E::CLASS);
         (*ex).exception_cleanup = Some(exception_cleanup::<E>);
-        let result = _Unwind_RaiseException(ex);
-        crate::unwinding_debugln!("[PANICKING] _Unwind_RaiseException returned: {:?}", result);
-        result
+        _Unwind_RaiseException(ex)
     }
 }
 
@@ -46,15 +39,9 @@ pub fn catch_unwind<E: Exception, R, F: FnOnce() -> R>(f: F) -> Result<R, Option
 
     let data_ptr = &mut data as *mut _ as *mut u8;
     unsafe {
-        crate::unwinding_debugln!("[PANICKING] catch_unwind: calling core::intrinsics::catch_unwind");
-        let result = core::intrinsics::catch_unwind(do_call::<F, R>, data_ptr, do_catch::<E>);
-        crate::unwinding_debugln!("[PANICKING] catch_unwind: intrinsics returned: {}", result);
-        
-        return if result == 0 {
-            crate::unwinding_debugln!("[PANICKING] catch_unwind: function completed successfully");
+        return if core::intrinsics::catch_unwind(do_call::<F, R>, data_ptr, do_catch::<E>) == 0 {
             Ok(ManuallyDrop::into_inner(data.r))
         } else {
-            crate::unwinding_debugln!("[PANICKING] catch_unwind: function panicked");
             Err(ManuallyDrop::into_inner(data.p))
         };
     }
@@ -70,20 +57,14 @@ pub fn catch_unwind<E: Exception, R, F: FnOnce() -> R>(f: F) -> Result<R, Option
 
     #[cold]
     fn do_catch<E: Exception>(data: *mut u8, exception: *mut u8) {
-        crate::unwinding_debugln!("[PANICKING] do_catch: exception caught");
         unsafe {
             let data = &mut *(data as *mut ManuallyDrop<Option<E>>);
             let exception = exception as *mut UnwindException;
-            let exception_class = (*exception).exception_class;
-            crate::unwinding_debugln!("[PANICKING] do_catch: exception class: {:?}", exception_class);
-            
-            if exception_class != u64::from_ne_bytes(E::CLASS) {
-                crate::unwinding_debugln!("[PANICKING] do_catch: foreign exception, deleting");
+            if (*exception).exception_class != u64::from_ne_bytes(E::CLASS) {
                 _Unwind_DeleteException(exception);
                 *data = ManuallyDrop::new(None);
                 return;
             }
-            crate::unwinding_debugln!("[PANICKING] do_catch: unwrapping exception");
             *data = ManuallyDrop::new(Some(E::unwrap(exception)));
         }
     }

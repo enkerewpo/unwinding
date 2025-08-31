@@ -3,7 +3,7 @@ use gimli::{LoongArch, Register};
 
 use super::maybe_cfi;
 
-pub const MAX_REG_RULES: usize = 74;
+pub const MAX_REG_RULES: usize = 64;
 
 #[repr(C)]
 #[derive(Clone, Default)]
