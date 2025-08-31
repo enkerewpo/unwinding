@@ -1,5 +1,6 @@
 use super::FDESearchResult;
 use crate::util::get_unlimited_slice;
+use crate::baremetal_debug::unwinding_debugln;
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
@@ -79,42 +80,57 @@ pub fn get_finder() -> &'static Registry {
 
 impl super::FDEFinder for Registry {
     fn find_fde(&self, pc: usize) -> Option<FDESearchResult> {
+        unwinding_debugln!("Registry::find_fde: searching for PC 0x{:x}", pc);
         unsafe {
             let guard = lock_global_state();
             let mut cur = guard.object;
+            let mut object_count = 0;
 
             while !cur.is_null() {
+                object_count += 1;
+                unwinding_debugln!("Registry::find_fde: checking object {} at {:p}", object_count, cur);
                 let bases = BaseAddresses::default()
                     .set_text((*cur).tbase as _)
                     .set_got((*cur).dbase as _);
                 match (*cur).table {
                     Table::Single(addr) => {
+                        unwinding_debugln!("Registry::find_fde: checking single table at {:p}", addr);
                         let eh_frame = EhFrame::new(get_unlimited_slice(addr as _), NativeEndian);
                         let bases = bases.clone().set_eh_frame(addr as usize as _);
                         if let Ok(fde) =
                             eh_frame.fde_for_address(&bases, pc as _, EhFrame::cie_from_offset)
                         {
+                            unwinding_debugln!("Registry::find_fde: found FDE in single table");
                             return Some(FDESearchResult {
                                 fde,
                                 bases,
                                 eh_frame,
                             });
+                        } else {
+                            unwinding_debugln!("Registry::find_fde: no FDE found in single table");
                         }
                     }
                     Table::Multiple(mut addrs) => {
+                        unwinding_debugln!("Registry::find_fde: checking multiple table starting at {:p}", addrs);
                         let mut addr = *addrs;
+                        let mut table_index = 0;
                         while !addr.is_null() {
+                            table_index += 1;
+                            unwinding_debugln!("Registry::find_fde: checking table entry {} at {:p}", table_index, addr);
                             let eh_frame =
                                 EhFrame::new(get_unlimited_slice(addr as _), NativeEndian);
                             let bases = bases.clone().set_eh_frame(addr as usize as _);
                             if let Ok(fde) =
                                 eh_frame.fde_for_address(&bases, pc as _, EhFrame::cie_from_offset)
                             {
+                                unwinding_debugln!("Registry::find_fde: found FDE in multiple table entry {}", table_index);
                                 return Some(FDESearchResult {
                                     fde,
                                     bases,
                                     eh_frame,
                                 });
+                            } else {
+                                unwinding_debugln!("Registry::find_fde: no FDE found in multiple table entry {}", table_index);
                             }
 
                             addrs = addrs.add(1);
@@ -125,6 +141,8 @@ impl super::FDEFinder for Registry {
 
                 cur = (*cur).next;
             }
+            
+            unwinding_debugln!("Registry::find_fde: checked {} objects, no FDE found", object_count);
         }
 
         None
@@ -138,7 +156,9 @@ unsafe extern "C" fn __register_frame_info_bases(
     tbase: *const c_void,
     dbase: *const c_void,
 ) {
+    unwinding_debugln!("__register_frame_info_bases: registering frame at {:p}", begin);
     if begin.is_null() {
+        unwinding_debugln!("__register_frame_info_bases: begin is null, skipping");
         return;
     }
 
@@ -153,6 +173,7 @@ unsafe extern "C" fn __register_frame_info_bases(
         let mut guard = lock_global_state();
         (*ob).next = guard.object;
         guard.object = ob;
+        unwinding_debugln!("__register_frame_info_bases: frame registered successfully");
     }
 }
 
@@ -178,6 +199,7 @@ unsafe extern "C" fn __register_frame_info_table_bases(
     tbase: *const c_void,
     dbase: *const c_void,
 ) {
+    unwinding_debugln!("__register_frame_info_table_bases: registering frame table at {:p}", begin);
     unsafe {
         ob.write(Object {
             next: core::ptr::null_mut(),
@@ -189,6 +211,7 @@ unsafe extern "C" fn __register_frame_info_table_bases(
         let mut guard = lock_global_state();
         (*ob).next = guard.object;
         guard.object = ob;
+        unwinding_debugln!("__register_frame_info_table_bases: frame table registered successfully");
     }
 }
 

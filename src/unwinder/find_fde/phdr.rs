@@ -1,5 +1,6 @@
 use super::FDESearchResult;
 use crate::util::*;
+use crate::baremetal_debug::unwinding_debugln;
 
 use core::mem;
 use core::slice;
@@ -19,14 +20,18 @@ pub fn get_finder() -> &'static PhdrFinder {
 
 impl super::FDEFinder for PhdrFinder {
     fn find_fde(&self, pc: usize) -> Option<FDESearchResult> {
+        unwinding_debugln!("PhdrFinder::find_fde: searching for PC 0x{:x}", pc);
         #[cfg(feature = "fde-phdr-aux")]
         if let Some(v) = search_aux_phdr(pc) {
+            unwinding_debugln!("PhdrFinder::find_fde: found FDE via aux phdr");
             return Some(v);
         }
         #[cfg(feature = "fde-phdr-dl")]
         if let Some(v) = search_dl_phdr(pc) {
+            unwinding_debugln!("PhdrFinder::find_fde: found FDE via dl phdr");
             return Some(v);
         }
+        unwinding_debugln!("PhdrFinder::find_fde: no FDE found");
         None
     }
 }
@@ -35,13 +40,16 @@ impl super::FDEFinder for PhdrFinder {
 fn search_aux_phdr(pc: usize) -> Option<FDESearchResult> {
     use libc::{AT_PHDR, AT_PHNUM, PT_PHDR, getauxval};
 
+    unwinding_debugln!("search_aux_phdr: searching via aux phdr for PC 0x{:x}", pc);
     unsafe {
         let phdr = getauxval(AT_PHDR) as *const Elf_Phdr;
         let phnum = getauxval(AT_PHNUM) as usize;
+        unwinding_debugln!("search_aux_phdr: found {} phdrs at {:p}", phnum, phdr);
         let phdrs = slice::from_raw_parts(phdr, phnum);
         // With known address of PHDR, we can calculate the base address in reverse.
         let base =
             phdrs.as_ptr() as usize - phdrs.iter().find(|x| x.p_type == PT_PHDR)?.p_vaddr as usize;
+        unwinding_debugln!("search_aux_phdr: calculated base address 0x{:x}", base);
         search_phdr(phdrs, base, pc)
     }
 }
@@ -51,6 +59,7 @@ fn search_dl_phdr(pc: usize) -> Option<FDESearchResult> {
     use core::ffi::c_void;
     use libc::{dl_iterate_phdr, dl_phdr_info};
 
+    unwinding_debugln!("search_dl_phdr: searching via dl phdr for PC 0x{:x}", pc);
     struct CallbackData {
         pc: usize,
         result: Option<FDESearchResult>,
@@ -63,10 +72,14 @@ fn search_dl_phdr(pc: usize) -> Option<FDESearchResult> {
     ) -> c_int {
         unsafe {
             let data = &mut *(data as *mut CallbackData);
+            unwinding_debugln!("phdr_callback: checking object at {:p}", (*info).dlpi_addr);
             let phdrs = slice::from_raw_parts((*info).dlpi_phdr, (*info).dlpi_phnum as usize);
             if let Some(v) = search_phdr(phdrs, (*info).dlpi_addr as _, data.pc) {
+                unwinding_debugln!("phdr_callback: found FDE in object at {:p}", (*info).dlpi_addr);
                 data.result = Some(v);
                 return 1;
+            } else {
+                unwinding_debugln!("phdr_callback: no FDE found in object at {:p}", (*info).dlpi_addr);
             }
             0
         }
@@ -78,25 +91,29 @@ fn search_dl_phdr(pc: usize) -> Option<FDESearchResult> {
 }
 
 fn search_phdr(phdrs: &[Elf_Phdr], base: usize, pc: usize) -> Option<FDESearchResult> {
+    unwinding_debugln!("search_phdr: searching {} phdrs with base 0x{:x} for PC 0x{:x}", phdrs.len(), base, pc);
     unsafe {
         let mut text = None;
         let mut eh_frame_hdr = None;
         let mut dynamic = None;
 
-        for phdr in phdrs {
+        for (i, phdr) in phdrs.iter().enumerate() {
             let start = base + phdr.p_vaddr as usize;
             match phdr.p_type {
                 PT_LOAD => {
                     let end = start + phdr.p_memsz as usize;
                     let range = start..end;
                     if range.contains(&pc) {
+                        unwinding_debugln!("search_phdr: PC 0x{:x} found in PT_LOAD segment {} (0x{:x}-0x{:x})", pc, i, start, end);
                         text = Some(range);
                     }
                 }
                 PT_GNU_EH_FRAME => {
+                    unwinding_debugln!("search_phdr: found PT_GNU_EH_FRAME segment {} at 0x{:x}", i, start);
                     eh_frame_hdr = Some(start);
                 }
                 PT_DYNAMIC => {
+                    unwinding_debugln!("search_phdr: found PT_DYNAMIC segment {} at 0x{:x}", i, start);
                     dynamic = Some(start);
                 }
                 _ => (),

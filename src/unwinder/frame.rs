@@ -9,6 +9,7 @@ use super::find_fde::{self, FDEFinder, FDESearchResult};
 use crate::abi::PersonalityRoutine;
 use crate::arch::*;
 use crate::util::*;
+use crate::baremetal_debug::unwinding_debugln;
 
 struct StoreOnStack;
 
@@ -46,22 +47,43 @@ pub struct Frame {
 impl Frame {
     pub fn from_context(ctx: &Context, signal: bool) -> Result<Option<Self>, gimli::Error> {
         let mut ra = ctx[Arch::RA];
+        unwinding_debugln!("Frame::from_context: RA = 0x{:x}, signal = {}", ra, signal);
 
         // Reached end of stack
         if ra == 0 {
+            unwinding_debugln!("Frame::from_context: RA is 0, end of stack");
             return Ok(None);
         }
 
         // RA points to the *next* instruction, so move it back 1 byte for the call instruction.
         if !signal {
             ra -= 1;
+            unwinding_debugln!("Frame::from_context: adjusted RA to 0x{:x} for non-signal frame", ra);
         }
 
+        unwinding_debugln!("Frame::from_context: searching for FDE at RA 0x{:x}", ra);
         let fde_result = match find_fde::get_finder().find_fde(ra as _) {
-            Some(v) => v,
-            None => return Ok(None),
+            Some(v) => {
+                        unwinding_debugln!("Frame::from_context: found FDE");
+        unwinding_debugln!("Frame::from_context: FDE initial address: 0x{:x}", v.fde.initial_address());
+        unwinding_debugln!("Frame::from_context: FDE end address: 0x{:x}", v.fde.end_address());
+        unwinding_debugln!("Frame::from_context: eh_frame base: 0x{:x}", v.bases.eh_frame.data.unwrap_or(0));
+        unwinding_debugln!("Frame::from_context: text base: 0x{:x}", v.bases.eh_frame.text.unwrap_or(0));
+        unwinding_debugln!("Frame::from_context: section base: 0x{:x}", v.bases.eh_frame.section.unwrap_or(0));
+        unwinding_debugln!("Frame::from_context: eh_frame_hdr base: 0x{:x}", v.bases.eh_frame_hdr.data.unwrap_or(0));
+        v
+    },
+            None => {
+                unwinding_debugln!("Frame::from_context: no FDE found");
+                return Ok(None);
+            }
         };
+        
+        unwinding_debugln!("Frame::from_context: creating unwind context");
         let mut unwinder = UnwindContext::<_, StoreOnStack>::new_in();
+        unwinding_debugln!("Frame::from_context: calling unwind_info_for_address with RA 0x{:x}", ra);
+        unwinding_debugln!("Frame::from_context: bases before call: text={:?}, section={:?}, eh_frame={:?}, eh_frame_hdr={:?}", 
+            fde_result.bases.eh_frame.text, fde_result.bases.eh_frame.section, fde_result.bases.eh_frame.data, fde_result.bases.eh_frame_hdr);
         let row = fde_result
             .fde
             .unwind_info_for_address(
@@ -69,9 +91,12 @@ impl Frame {
                 &fde_result.bases,
                 &mut unwinder,
                 ra as _,
-            )?
-            .clone();
+            )?;
+        unwinding_debugln!("Frame::from_context: unwind_info_for_address returned successfully");
+        let row = row.clone();
+        unwinding_debugln!("Frame::from_context: row cloned successfully");
 
+        unwinding_debugln!("Frame::from_context: frame created successfully");
         Ok(Some(Self { fde_result, row }))
     }
 
@@ -132,40 +157,73 @@ impl Frame {
     }
 
     pub fn unwind(&self, ctx: &Context) -> Result<Context, gimli::Error> {
+        unwinding_debugln!("Frame::unwind: starting frame unwind");
         let row = &self.row;
         let mut new_ctx = ctx.clone();
 
         let cfa = match *row.cfa() {
-            CfaRule::RegisterAndOffset { register, offset } => {
-                ctx[register].wrapping_add(offset as usize)
+                            CfaRule::RegisterAndOffset { register, offset } => {
+                    let cfa = ctx[register].wrapping_add(offset as usize);
+                    unwinding_debugln!("Frame::unwind: CFA = register {:?} + offset {} = 0x{:x}", register, offset, cfa);
+                    cfa
+                }
+            CfaRule::Expression(expr) => {
+                unwinding_debugln!("Frame::unwind: CFA from expression");
+                self.evaluate_expression(ctx, expr)?
             }
-            CfaRule::Expression(expr) => self.evaluate_expression(ctx, expr)?,
         };
 
         new_ctx[Arch::SP] = cfa as _;
         new_ctx[Arch::RA] = 0;
+        unwinding_debugln!("Frame::unwind: set SP to 0x{:x}, RA to 0", cfa);
 
         #[warn(non_exhaustive_omitted_patterns)]
         for (reg, rule) in row.registers() {
             let value = match *rule {
-                RegisterRule::Undefined | RegisterRule::SameValue => ctx[*reg],
-                RegisterRule::Offset(offset) => unsafe {
-                    *((cfa.wrapping_add(offset as usize)) as *const usize)
+                RegisterRule::Undefined | RegisterRule::SameValue => {
+                    unwinding_debugln!("Frame::unwind: register {:?} = same value 0x{:x}", reg, ctx[*reg]);
+                    ctx[*reg]
                 },
-                RegisterRule::ValOffset(offset) => cfa.wrapping_add(offset as usize),
-                RegisterRule::Register(r) => ctx[r],
+                RegisterRule::Offset(offset) => {
+                    let addr = cfa.wrapping_add(offset as usize);
+                    let value = unsafe { *((addr) as *const usize) };
+                    unwinding_debugln!("Frame::unwind: register {:?} = [0x{:x} + {}] = 0x{:x}", reg, cfa, offset, value);
+                    value
+                },
+                RegisterRule::ValOffset(offset) => {
+                    let value = cfa.wrapping_add(offset as usize);
+                    unwinding_debugln!("Frame::unwind: register {:?} = 0x{:x} + {} = 0x{:x}", reg, cfa, offset, value);
+                    value
+                },
+                RegisterRule::Register(r) => {
+                    let value = ctx[r];
+                    unwinding_debugln!("Frame::unwind: register {:?} = register {:?} = 0x{:x}", reg, r, value);
+                    value
+                },
                 RegisterRule::Expression(expr) => {
+                    unwinding_debugln!("Frame::unwind: register {:?} from expression", reg);
                     let addr = self.evaluate_expression(ctx, expr)?;
-                    unsafe { *(addr as *const usize) }
+                    let value = unsafe { *(addr as *const usize) };
+                    unwinding_debugln!("Frame::unwind: register {:?} = [0x{:x}] = 0x{:x}", reg, addr, value);
+                    value
                 }
-                RegisterRule::ValExpression(expr) => self.evaluate_expression(ctx, expr)?,
+                RegisterRule::ValExpression(expr) => {
+                    unwinding_debugln!("Frame::unwind: register {:?} from value expression", reg);
+                    let value = self.evaluate_expression(ctx, expr)?;
+                    unwinding_debugln!("Frame::unwind: register {:?} = 0x{:x}", reg, value);
+                    value
+                },
                 RegisterRule::Architectural => unreachable!(),
-                RegisterRule::Constant(value) => value as usize,
+                RegisterRule::Constant(value) => {
+                    unwinding_debugln!("Frame::unwind: register {:?} = constant 0x{:x}", reg, value);
+                    value as usize
+                },
                 _ => unreachable!(),
             };
             new_ctx[*reg] = value;
         }
 
+        unwinding_debugln!("Frame::unwind: frame unwind completed successfully");
         Ok(new_ctx)
     }
 

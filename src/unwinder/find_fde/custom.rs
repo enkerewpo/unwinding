@@ -1,5 +1,6 @@
 use super::{FDEFinder, FDESearchResult};
 use crate::util::{deref_pointer, get_unlimited_slice};
+use crate::baremetal_debug::unwinding_debugln;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use gimli::{BaseAddresses, EhFrame, EhFrameHdr, NativeEndian, UnwindSection};
@@ -12,6 +13,7 @@ pub(crate) fn get_finder() -> &'static CustomFinder {
 
 impl FDEFinder for CustomFinder {
     fn find_fde(&self, pc: usize) -> Option<FDESearchResult> {
+        unwinding_debugln!("CustomFinder::find_fde: searching for PC 0x{:x}", pc);
         get_custom_eh_frame_finder().and_then(|eh_frame_finder| find_fde(eh_frame_finder, pc))
     }
 }
@@ -90,13 +92,19 @@ fn get_custom_eh_frame_finder() -> Option<&'static dyn EhFrameFinder> {
 }
 
 fn find_fde<T: EhFrameFinder + ?Sized>(eh_frame_finder: &T, pc: usize) -> Option<FDESearchResult> {
+    unwinding_debugln!("find_fde: calling custom eh_frame_finder");
     let info = eh_frame_finder.find(pc)?;
     let text_base = info.text_base;
+    unwinding_debugln!("find_fde: got frame info, text_base: {:?}", text_base);
     match info.kind {
         FrameInfoKind::EhFrameHdr(eh_frame_hdr) => {
+            unwinding_debugln!("find_fde: using EhFrameHdr at 0x{:x}", eh_frame_hdr);
             find_fde_with_eh_frame_hdr(pc, text_base, eh_frame_hdr)
         }
-        FrameInfoKind::EhFrame(eh_frame) => find_fde_with_eh_frame(pc, text_base, eh_frame),
+        FrameInfoKind::EhFrame(eh_frame) => {
+            unwinding_debugln!("find_fde: using EhFrame at 0x{:x}", eh_frame);
+            find_fde_with_eh_frame(pc, text_base, eh_frame)
+        }
     }
 }
 
@@ -105,39 +113,54 @@ fn find_fde_with_eh_frame_hdr(
     text_base: Option<usize>,
     eh_frame_hdr: usize,
 ) -> Option<FDESearchResult> {
+    unwinding_debugln!("find_fde_with_eh_frame_hdr: searching for PC 0x{:x}", pc);
     unsafe {
         let mut bases = BaseAddresses::default().set_eh_frame_hdr(eh_frame_hdr as _);
         if let Some(text_base) = text_base {
             bases = bases.set_text(text_base as _);
+            unwinding_debugln!("find_fde_with_eh_frame_hdr: set text base to 0x{:x}", text_base);
         }
         let eh_frame_hdr = EhFrameHdr::new(get_unlimited_slice(eh_frame_hdr as _), NativeEndian)
             .parse(&bases, core::mem::size_of::<usize>() as _)
             .ok()?;
         let eh_frame = deref_pointer(eh_frame_hdr.eh_frame_ptr());
+        unwinding_debugln!("find_fde_with_eh_frame_hdr: eh_frame at 0x{:x}", eh_frame);
         let bases = bases.set_eh_frame(eh_frame as _);
         let eh_frame = EhFrame::new(get_unlimited_slice(eh_frame as _), NativeEndian);
 
         // Use binary search table for address if available.
-        if let Some(table) = eh_frame_hdr.table()
-            && let Ok(fde) =
+        if let Some(table) = eh_frame_hdr.table() {
+            unwinding_debugln!("find_fde_with_eh_frame_hdr: using binary search table");
+            if let Ok(fde) =
                 table.fde_for_address(&eh_frame, &bases, pc as _, EhFrame::cie_from_offset)
-        {
-            return Some(FDESearchResult {
-                fde,
-                bases,
-                eh_frame,
-            });
+            {
+                unwinding_debugln!("find_fde_with_eh_frame_hdr: found FDE via binary search table");
+                return Some(FDESearchResult {
+                    fde,
+                    bases,
+                    eh_frame,
+                });
+            } else {
+                unwinding_debugln!("find_fde_with_eh_frame_hdr: binary search table failed");
+            }
+        } else {
+            unwinding_debugln!("find_fde_with_eh_frame_hdr: no binary search table available");
         }
 
         // Otherwise do the linear search.
+        unwinding_debugln!("find_fde_with_eh_frame_hdr: trying linear search");
         if let Ok(fde) = eh_frame.fde_for_address(&bases, pc as _, EhFrame::cie_from_offset) {
+            unwinding_debugln!("find_fde_with_eh_frame_hdr: found FDE via linear search");
             return Some(FDESearchResult {
                 fde,
                 bases,
                 eh_frame,
             });
+        } else {
+            unwinding_debugln!("find_fde_with_eh_frame_hdr: linear search failed");
         }
 
+        unwinding_debugln!("find_fde_with_eh_frame_hdr: no FDE found");
         None
     }
 }
@@ -147,19 +170,25 @@ fn find_fde_with_eh_frame(
     text_base: Option<usize>,
     eh_frame: usize,
 ) -> Option<FDESearchResult> {
+    unwinding_debugln!("find_fde_with_eh_frame: searching for PC 0x{:x}", pc);
     unsafe {
         let mut bases = BaseAddresses::default().set_eh_frame(eh_frame as _);
         if let Some(text_base) = text_base {
             bases = bases.set_text(text_base as _);
+            unwinding_debugln!("find_fde_with_eh_frame: set text base to 0x{:x}", text_base);
         }
         let eh_frame = EhFrame::new(get_unlimited_slice(eh_frame as _), NativeEndian);
 
+        unwinding_debugln!("find_fde_with_eh_frame: searching for FDE");
         if let Ok(fde) = eh_frame.fde_for_address(&bases, pc as _, EhFrame::cie_from_offset) {
+            unwinding_debugln!("find_fde_with_eh_frame: found FDE");
             return Some(FDESearchResult {
                 fde,
                 bases,
                 eh_frame,
             });
+        } else {
+            unwinding_debugln!("find_fde_with_eh_frame: no FDE found");
         }
 
         None
