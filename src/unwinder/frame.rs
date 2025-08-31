@@ -26,7 +26,7 @@ const fn next_value(x: usize) -> usize {
 }
 
 impl<O: gimli::ReaderOffset> gimli::UnwindContextStorage<O> for StoreOnStack {
-    type Rules = [(Register, RegisterRule<O>); next_value(MAX_REG_RULES)];
+    type Rules = [(Register, RegisterRule<O>); 64]; // 减少到64，避免过大数组
     type Stack = [UnwindTableRow<O, Self>; 2];
 }
 

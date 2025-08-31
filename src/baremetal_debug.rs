@@ -81,15 +81,15 @@ macro_rules! unwinding_debug {
 macro_rules! unwinding_debugln {
     () => {
         #[cfg(feature = "baremetal-debug")]
-        $crate::baremetal_debug::_baremetal_debug_println(format_args!(""));
+        $crate::baremetal_debug::_baremetal_debug_println(format_args!("[{}:{}]", file!(), line!()));
     };
     ($fmt:expr) => {
         #[cfg(feature = "baremetal-debug")]
-        $crate::baremetal_debug::_baremetal_debug_println(format_args!($fmt));
+        $crate::baremetal_debug::_baremetal_debug_println(format_args!("[{}:{}] {}", file!(), line!(), format_args!($fmt)));
     };
     ($fmt:expr, $($arg:tt)*) => {
         #[cfg(feature = "baremetal-debug")]
-        $crate::baremetal_debug::_baremetal_debug_println(format_args!($fmt, $($arg)*));
+        $crate::baremetal_debug::_baremetal_debug_println(format_args!("[{}:{}] {}", file!(), line!(), format_args!($fmt, $($arg)*)));
     };
 }
 
