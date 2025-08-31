@@ -38,6 +38,9 @@ fn with_context<T, F: FnOnce(&mut Context) -> T>(f: F) -> T {
         unsafe {
             let data = &mut *ptr.cast::<Data<T, F>>();
             crate::unwinding_debugln!("[CONTEXT] delegate: About to call closure");
+            // make sure the input pointer is properly aligned!
+            crate::unwinding_debugln!("[CONTEXT] delegate: Input pointer aligned?: {:p}", ptr);
+            assert!(ptr as usize % 16 == 0);
             let t = ManuallyDrop::take(&mut data.f)(ctx);
             crate::unwinding_debugln!("[CONTEXT] delegate: Closure completed, storing result");
             data.t = ManuallyDrop::new(t);
